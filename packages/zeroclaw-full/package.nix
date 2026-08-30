@@ -88,6 +88,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   buildFeatures = features;
   checkFeatures = features;
 
+  # Upstream's release profile (`lto = "fat"`, `codegen-units = 1`) is kept as
+  # shipped. It makes the final link a single rustc process holding the whole
+  # program, which needs more memory than a hosted CI runner has; the workflow
+  # adds swap rather than relaxing the profile here.
+
   postPatch = ''
     # build.rs runs `npm ci && npm run build` during compilation,
     # skip and handle it ourselves in postBuild

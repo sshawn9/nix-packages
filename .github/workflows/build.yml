@@ -32,6 +32,31 @@ jobs:
             runner: macos-13
 
     steps:
+      # A hosted runner ships ~14GB free on /, which the Rust vendor tree, the
+      # npm store and the build directory together overrun.
+      - name: Reclaim runner disk space
+        if: runner.os == 'Linux'
+        # No tags are published; main is the documented reference.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: false
+          swap-storage: false
+
+      # Upstream keeps `lto = "fat"` with `codegen-units = 1`, so the final
+      # link is one rustc process holding the whole program. With every channel
+      # and subsystem enabled that overruns the runner's 16GB, and lowering
+      # build parallelism does not help because the step is serial by
+      # construction. Back it with swap on the large temp disk instead.
+      - name: Add swap
+        if: runner.os == 'Linux'
+        run: |
+          sudo fallocate -l 32G /mnt/zeroclaw-swap
+          sudo chmod 600 /mnt/zeroclaw-swap
+          sudo mkswap /mnt/zeroclaw-swap
+          sudo swapon /mnt/zeroclaw-swap
+          free -h
+
       - uses: actions/checkout@v4
 
       - uses: cachix/install-nix-action@v31
