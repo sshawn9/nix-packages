@@ -1,0 +1,67 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    # zeroclaw-full compiles the whole Rust tree plus the gateway's npm
+    # dashboard, with no upstream cache to fall back on.
+    timeout-minutes: 300
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-latest
+          - system: x86_64-darwin
+            runner: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: sshawn9
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # A pull request from a fork has no access to the token; build it,
+          # just do not try to push.
+          skipPush: ${{ github.event_name == 'pull_request' }}
+
+      - name: Build zeroclaw-full
+        run: nix build --print-build-logs --no-link .#zeroclaw-full
+
+      - name: Build every other package for this system
+        run: |
+          set -euo pipefail
+          mapfile -t names < <(
+            nix eval --raw --apply \
+              'ps: builtins.concatStringsSep "\n" (builtins.attrNames ps)' \
+              ".#packages.${{ matrix.system }}"
+          )
+          for name in "${names[@]}"; do
+            [ "$name" = zeroclaw-full ] && continue
+            echo "::group::$name"
+            nix build --print-build-logs --no-link ".#$name"
+            echo "::endgroup::"
+          done
