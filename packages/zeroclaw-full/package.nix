@@ -16,6 +16,7 @@ let
     sqlite
     writableTmpDirAsHomeHook
     gitMinimal
+    jq
     versionCheckHook
     nix-update-script
     ;
@@ -125,6 +126,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeCheckInputs = [
     writableTmpDirAsHomeHook
     gitMinimal
+    # 0.8.4 added tests/architecture/release_workflow.rs, which shells out to
+    # scripts/release/scoop_metadata.sh; that script needs jq.
+    jq
   ];
 
   # wiremock tests require socket binding, which is denied in the darwin sandbox
