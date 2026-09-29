@@ -17,6 +17,9 @@ let
     writableTmpDirAsHomeHook
     gitMinimal
     jq
+    expect
+    curl
+    python3
     versionCheckHook
     nix-update-script
     ;
@@ -129,7 +132,17 @@ rustPlatform.buildRustPackage (finalAttrs: {
     # 0.8.4 added tests/architecture/release_workflow.rs, which shells out to
     # scripts/release/scoop_metadata.sh; that script needs jq.
     jq
+    # The daemon job-control test drives a PTY and probes HTTP/Unix sockets.
+    expect
+    curl
+    python3
   ];
+
+  # buildRustPackage exports RUST_LOG="" by default. The empty EnvFilter hides
+  # the warning records checked by the CLI trace tests; use CLI defaults instead.
+  preCheck = ''
+    unset RUST_LOG
+  '';
 
   # wiremock tests require socket binding, which is denied in the darwin sandbox
   checkFlags = [
