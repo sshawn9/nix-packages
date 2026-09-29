@@ -5,15 +5,56 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    # Input IDs are flake package names. Add new packages here with default: false.
+    inputs:
+      zeroclaw-full:
+        description: zeroclaw-full
+        type: boolean
+        default: true
+      context-summarizer:
+        description: context-summarizer
+        type: boolean
+        default: false
+      mihomo-get-zashboard:
+        description: mihomo-get-zashboard
+        type: boolean
+        default: false
+      mihomo-switch:
+        description: mihomo-switch
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select packages
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.packages.outputs.packages }}
+    steps:
+      - name: Read package checkboxes
+        id: packages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PACKAGE_INPUTS: ${{ toJSON(inputs) }}
+        shell: bash
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            packages=$(jq -c '[to_entries[] | select(.value == true) | .key]' <<< "$PACKAGE_INPUTS")
+          else
+            # Pushes and pull requests only build zeroclaw-full.
+            packages='["zeroclaw-full"]'
+          fi
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
   build:
-    name: ${{ matrix.system }}
-    runs-on: ${{ matrix.runner }}
+    needs: select
+    if: needs.select.outputs.packages != '[]'
+    name: ${{ matrix.package }} (${{ matrix.platform.system }})
+    runs-on: ${{ matrix.platform.runner }}
     # zeroclaw-full compiles the whole Rust tree plus the gateway's npm
     # dashboard, with no upstream cache to fall back on.
     timeout-minutes: 300
@@ -21,7 +62,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
+        package: ${{ fromJSON(needs.select.outputs.packages) }}
+        platform:
           - system: x86_64-linux
             runner: ubuntu-latest
           # - system: aarch64-linux
@@ -35,7 +77,7 @@ jobs:
       # A hosted runner ships ~14GB free on /, which the Rust vendor tree, the
       # npm store and the build directory together overrun.
       - name: Reclaim runner disk space
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.package == 'zeroclaw-full'
         # No tags are published; main is the documented reference.
         uses: jlumbroso/free-disk-space@main
         with:
@@ -49,7 +91,7 @@ jobs:
       # build parallelism does not help because the step is serial by
       # construction. Back it with swap on the large temp disk instead.
       - name: Add swap
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.package == 'zeroclaw-full'
         run: |
           sudo fallocate -l 32G /mnt/zeroclaw-swap
           sudo chmod 600 /mnt/zeroclaw-swap
@@ -73,20 +115,8 @@ jobs:
           # just do not try to push.
           skipPush: ${{ github.event_name == 'pull_request' }}
 
-      - name: Build zeroclaw-full
-        run: nix build --print-build-logs --no-link .#zeroclaw-full
-
-      - name: Build every other package for this system
-        run: |
-          set -euo pipefail
-          mapfile -t names < <(
-            nix eval --raw --apply \
-              'ps: builtins.concatStringsSep "\n" (builtins.attrNames ps)' \
-              ".#packages.${{ matrix.system }}"
-          )
-          for name in "${names[@]}"; do
-            [ "$name" = zeroclaw-full ] && continue
-            echo "::group::$name"
-            nix build --print-build-logs --no-link ".#$name"
-            echo "::endgroup::"
-          done
+      - name: Build package
+        env:
+          NIX_SYSTEM: ${{ matrix.platform.system }}
+          PACKAGE_NAME: ${{ matrix.package }}
+        run: nix build --print-build-logs --no-link --no-write-lock-file ".#packages.${NIX_SYSTEM}.${PACKAGE_NAME}"
