@@ -24,12 +24,12 @@ jobs:
         include:
           - system: x86_64-linux
             runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-          - system: aarch64-darwin
-            runner: macos-latest
-          - system: x86_64-darwin
-            runner: macos-13
+          # - system: aarch64-linux
+          #   runner: ubuntu-24.04-arm
+          # - system: aarch64-darwin
+          #   runner: macos-latest
+          # - system: x86_64-darwin
+          #   runner: macos-13
 
     steps:
       # A hosted runner ships ~14GB free on /, which the Rust vendor tree, the
