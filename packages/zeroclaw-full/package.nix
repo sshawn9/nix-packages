@@ -37,7 +37,7 @@ let
     [
       # Broad channel bundle: lark, line, slack, signal, mattermost, irc,
       # imessage, dingtalk, qq, bluesky, git, twitch, twitter, reddit, notion,
-      # mqtt, amqp, linq, wati, nextcloud, mochat, wecom, wecom-ws, clawdtalk,
+      # mqtt, amqp, linq, nextcloud, mochat, wecom, wecom-ws, clawdtalk,
       # whatsapp-cloud, voice-call.
       "channels-full"
 
@@ -68,21 +68,21 @@ let
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "zeroclaw-full";
-  version = "0.8.4";
+  version = "0.8.5";
 
   src = fetchFromGitHub {
     owner = "zeroclaw-labs";
     repo = "zeroclaw";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-6WAF826aftGuZjSHM/upWYmmVVjMS+vS+Kg4NetvjJc=";
+    hash = "sha256-X+2hSmbGibS0LJDew+CnXpJFW2k7w3fj/D54XHqLLzI=";
   };
 
-  cargoHash = "sha256-Pycl0MMyxWtfcssoFhvDT4UQJuVVBDNzN536eBFlND4=";
+  cargoHash = "sha256-a0tr5K6KReLRRN4X8sjJrriHy/n0LC7amlOHtM765eg=";
 
   npmDeps = fetchNpmDeps {
     inherit (finalAttrs) src;
     sourceRoot = "${finalAttrs.src.name}/web";
-    hash = "sha256-0CsPPy5a/jTr8nImwvTwStTgHm9wZbFBwCZVHKPZCvE=";
+    hash = "sha256-vY5eHo9VkW7h1d0zQwS70FAClDjCTO9frJ5GzgI9INM=";
   };
   npmRoot = "web";
 
