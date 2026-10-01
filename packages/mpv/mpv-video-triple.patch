@@ -1,0 +1,180 @@
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -20,6 +20,7 @@
+ #include <sys/stat.h>
+ #include <time.h>
+ 
++#include <libavutil/rational.h>
+ #include <libplacebo/colorspace.h>
+ #include <libplacebo/options.h>
+ #include <libplacebo/renderer.h>
+@@ -48,6 +49,7 @@
+ #include "gpu/video_shaders.h"
+ #include "sub/osd.h"
+ #include "gpu_next/context.h"
++#include "aspect.h"
+ 
+ #if HAVE_GL && defined(PL_HAVE_OPENGL)
+ #include <libplacebo/opengl.h>
+@@ -156,6 +158,8 @@
+     // Performance data of last frame
+     struct frame_info perf_fresh;
+     struct frame_info perf_redraw;
++    bool collect_triple_perf;
++    bool triple_perf_started[2];
+ 
+     struct mp_image_params target_params;
+ };
+@@ -171,6 +175,7 @@
+     float background_blur_radius;
+     float corner_rounding;
+     bool inter_preserve;
++    bool video_triple;
+     struct user_lut lut;
+     struct user_lut image_lut;
+     struct user_lut target_lut;
+@@ -208,6 +213,7 @@
+ #endif
+         {"corner-rounding", OPT_FLOAT(corner_rounding), M_RANGE(0, 1)},
+         {"interpolation-preserve", OPT_BOOL(inter_preserve)},
++        {"video-triple", OPT_BOOL(video_triple)},
+         {"lut", OPT_STRING(lut.opt), .flags = M_OPT_FILE},
+         {"lut-type", OPT_CHOICE_C(lut.type, lut_types)},
+         {"image-lut", OPT_STRING(image_lut.opt), .flags = M_OPT_FILE},
+@@ -803,8 +809,16 @@
+     default: abort();
+     }
+ 
+-    frame->count = info->index + 1;
+-    pl_dispatch_info_move(&frame->info[info->index], info->pass);
++    int index = info->index;
++    if (p->collect_triple_perf) {
++        int stage = info->stage == PL_RENDER_STAGE_BLEND;
++        index = p->triple_perf_started[stage] ? frame->count : 0;
++        p->triple_perf_started[stage] = true;
++    }
++    if (index >= VO_PASS_PERF_MAX)
++        return;
++    frame->count = index + 1;
++    pl_dispatch_info_move(&frame->info[index], info->pass);
+ }
+ 
+ static void update_options(struct vo *vo)
+@@ -1001,6 +1015,41 @@
+ 
+ static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
+                                      const struct mp_image *mpi);
++
++// Keep the source and scaling cache at one panel's size. Only the final
++// presentation is repeated; decoding and the filter chain remain unchanged.
++static bool render_frame(struct priv *p, const struct pl_frame_mix *mix,
++                         const struct pl_frame *image,
++                         const struct pl_frame *target,
++                         const struct pl_render_params *params)
++{
++    if (!p->next_opts->video_triple)
++        return mix ? pl_render_image_mix(p->rr, mix, target, params)
++                   : pl_render_image(p->rr, image, target, params);
++
++    struct pl_render_params local = *params;
++    local.skip_caching_single_frame = false;
++    p->collect_triple_perf = true;
++    p->triple_perf_started[0] = p->triple_perf_started[1] = false;
++    const float x0 = target->crop.x0, width = pl_rect_w(target->crop);
++    bool ok = true;
++    for (int i = 0; i < 3; i++) {
++        struct pl_frame tile = *target;
++        tile.crop.x0 = x0 + width * i / 3;
++        tile.crop.x1 = x0 + width * (i + 1) / 3;
++        // Clear borders once, and draw window-relative subtitles/OSD last.
++        if (i > 0)
++            local.border = PL_CLEAR_SKIP;
++        if (i < 2)
++            tile.num_overlays = 0;
++        ok = mix ? pl_render_image_mix(p->rr, mix, &tile, &local)
++                 : pl_render_image(p->rr, image, &tile, &local);
++        if (!ok)
++            break;
++    }
++    p->collect_triple_perf = false;
++    return ok;
++}
+ 
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+@@ -1404,7 +1453,7 @@
+     }
+ 
+     // Render frame
+-    if (!pl_render_image_mix(p->rr, &mix, &target, &params)) {
++    if (!render_frame(p, &mix, NULL, &target, &params)) {
+         MP_ERR(vo, "Failed rendering frame!\n");
+         goto done;
+     }
+@@ -1483,7 +1532,22 @@
+     struct priv *p = vo->priv;
+     struct mp_rect src, dst;
+     struct mp_osd_res osd;
+-    vo_get_src_dst_rects(vo, &src, &dst, &osd);
++    if (p->next_opts->video_triple && vo->params) {
++        // Modify a copy for layout only; retain the real frame's aspect ratio,
++        // crop, and HDR metadata. Repeat horizontally after video rotation.
++        struct mp_image_params video = *vo->params;
++        bool rotated = video.rotate % 180 == 90;
++        AVRational par = av_mul_q((AVRational){video.p_w, video.p_h},
++                                  rotated ? (AVRational){1, 3}
++                                          : (AVRational){3, 1});
++        video.p_w = par.num;
++        video.p_h = par.den;
++        mp_get_src_dst_rects(vo->log, vo->opts, vo->driver->caps, &video,
++                            vo->dwidth, vo->dheight, vo->monitor_par,
++                            &src, &dst, &osd);
++    } else {
++        vo_get_src_dst_rects(vo, &src, &dst, &osd);
++    }
+     if (vo->dwidth && vo->dheight) {
+         gpu_ctx_resize(p->context, vo->dwidth, vo->dheight);
+         vo->want_redraw = true;
+@@ -1621,6 +1685,8 @@
+         }
+         mp_rect_rotate(&src, src_w, src_h, mpi->params.rotate);
+         mp_rect_rotate(&dst, w, h, mpi->params.rotate);
++        if (p->next_opts->video_triple)
++            dst.x1 *= 3;
+ 
+         osd = (struct mp_osd_res) {
+             .display_par = 1.0,
+@@ -1727,7 +1793,7 @@
+         image.num_overlays = 0;
+     }
+ 
+-    if (!pl_render_image(p->rr, &image, &target, &params)) {
++    if (!render_frame(p, NULL, &image, &target, &params)) {
+         MP_ERR(vo, "Failed rendering frame!\n");
+         goto done;
+     }
+@@ -1816,6 +1882,7 @@
+         // Special case for --image-lut which requires a full reset.
+         int old_type = p->next_opts->image_lut.type;
+         update_options(vo);
++        resize(vo);
+         struct user_lut image_lut = p->next_opts->image_lut;
+         p->want_reset |= image_lut.opt && ((!image_lut.path && image_lut.opt) ||
+                          (image_lut.path && strcmp(image_lut.path, image_lut.opt)) ||
+--- a/DOCS/man/options.rst
++++ b/DOCS/man/options.rst
+@@ -1631,6 +1631,14 @@
+     Normally you should not set this. Try the various choices if you encounter
+     video that has the wrong aspect ratio in mpv, but seems to be correct in
+     other players.
++
++``--video-triple`` (``--vo=gpu-next`` only)
++    Display three horizontal copies of the video (default: no). Reuses the
++    renderer's frame cache instead of creating a triple-width decoded frame.
++    The option can be changed during playback, for example with the input binding
++    ``Ctrl+3 cycle video-triple``. Each copy keeps the video's current aspect
++    ratio, crop and rotation. Window-relative subtitles and OSD are drawn once
++    over the combined output. Video screenshots include all three copies.
+ 
+ ``--video-unscaled=<no|yes|downscale-big>``
+     Disable scaling of the video. If the window is larger than the video,

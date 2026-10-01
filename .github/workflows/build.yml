@@ -11,6 +11,10 @@ on:
         description: zeroclaw-full
         type: boolean
         default: true
+      mpv:
+        description: mpv
+        type: boolean
+        default: true
       context-summarizer:
         description: context-summarizer
         type: boolean
@@ -45,8 +49,7 @@ jobs:
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
             packages=$(jq -c '[to_entries[] | select(.value == true) | .key]' <<< "$PACKAGE_INPUTS")
           else
-            # Pushes and pull requests only build zeroclaw-full.
-            packages='["zeroclaw-full"]'
+            packages='["zeroclaw-full","mpv"]'
           fi
           echo "packages=$packages" >> "$GITHUB_OUTPUT"
 
